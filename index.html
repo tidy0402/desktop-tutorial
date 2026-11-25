@@ -136,7 +136,8 @@ h2 small{font-weight:400;font-size:11.5px;color:var(--sub)}
     { id: "m2", t: "午餐", d: "食堂：米饭 1 小碗 + 荤 1 掌 + 绿叶菜 2 份", k: 600 },
     { id: "m3", t: "下午", d: "苹果 1 个", k: 100 },
     { id: "m4", t: "晚餐", d: "玉米 1 + 鸡胸 150 g + 番茄 1 + 黄瓜 1", k: 375 },
-    { id: "m5", t: "练后", d: "蛋白粉 1 勺（牛奶或水冲）", k: 120 }
+    { id: "m5", t: "练后", d: "蛋白粉 1 勺（牛奶或水冲）", k: 120 },
+    { id: "m6", t: "饮料", d: "橙C美式 1 杯（不加糖浆）", k: 140, opt: true, note: "喝了就勾 · 不计入完成度" }
   ];
 
   var HABITS = [
@@ -210,10 +211,14 @@ h2 small{font-weight:400;font-size:11.5px;color:var(--sub)}
     return PLAN[w] || REST;
   }
 
-  function totalItems(p) { return MEALS.length + p.items.length + HABITS.length; }
+  function totalItems(p) {
+    var n = p.items.length + HABITS.length, i;
+    for (i = 0; i < MEALS.length; i++) if (!MEALS[i].opt) n++;
+    return n;
+  }
   function doneItems(c, p) {
     var n = 0, i;
-    for (i = 0; i < MEALS.length; i++) if (c[MEALS[i].id]) n++;
+    for (i = 0; i < MEALS.length; i++) if (!MEALS[i].opt && c[MEALS[i].id]) n++;
     for (i = 0; i < p.items.length; i++) if (c[p.items[i].id]) n++;
     for (i = 0; i < HABITS.length; i++) if (c[HABITS[i].id]) n++;
     return n;
@@ -280,9 +285,9 @@ h2 small{font-weight:400;font-size:11.5px;color:var(--sub)}
     html += '<section><h2>饮食<small>≈1650 kcal · 蛋白 124 g</small></h2>';
     for (var m = 0; m < MEALS.length; m++) {
       var it = MEALS[m];
-      html += row(it.id, '<b>' + it.t + '</b>　' + esc(it.d), "", it.k, !!c[it.id]);
+      html += row(it.id, '<b>' + it.t + '</b>　' + esc(it.d), it.note || "", it.k, !!c[it.id]);
     }
-    html += '<div class="tip"><b>橙C美式</b> 每周 3–4 次，约 140 kcal，不替代苹果，不加糖浆，下午 4 点前喝。<br>' +
+    html += '<div class="tip">咖啡那行只在喝的日子勾，用来统计，不计入完成度。<br>' +
       '纤维只有约 19 g，午餐绿叶菜一定打满两份。</div></section>';
 
     /* ---- 训练 ---- */
@@ -311,7 +316,7 @@ h2 small{font-weight:400;font-size:11.5px;color:var(--sub)}
 
     /* ---- 统计 ---- */
     var monthKey = ymd(viewDate).slice(0, 7);
-    var days = 0, trains = 0, wFirst = null, wLast = null, wLastDate = "";
+    var days = 0, trains = 0, coffees = 0, wFirst = null, wLast = null, wLastDate = "";
     var keys = Object.keys(s).sort();
     for (var q = 0; q < keys.length; q++) {
       var kx = keys[q];
@@ -322,15 +327,22 @@ h2 small{font-weight:400;font-size:11.5px;color:var(--sub)}
       var cn = 0, tot = totalItems(pl);
       var ck = rc.c || {};
       cn = doneItems(ck, pl);
+      if (ck.m6) coffees++;
       if (cn > 0) days++;
       if (PLAN[dv.getDay()] && cn >= pl.items.length) trains++;
       if (rc.w != null) { if (wFirst == null) wFirst = rc.w; wLast = rc.w; wLastDate = kx; }
     }
     var gap = wLast != null ? (wLast - 63) : null;
+    var nowD = new Date();
+    var isCur = ymd(nowD).slice(0, 7) === monthKey;
+    var elapsed = isCur ? nowD.getDate() : new Date(viewDate.getFullYear(), viewDate.getMonth() + 1, 0).getDate();
+    var rate = elapsed ? Math.round(days / elapsed * 100) : 0;
 
     html += '<section><h2>本月<small>' + monthKey.replace("-", " / ") + '</small></h2><div class="stats">' +
       '<div class="stat"><b>' + days + '</b><span>打卡天数</span></div>' +
       '<div class="stat"><b>' + trains + '</b><span>完成训练</span></div>' +
+      '<div class="stat"><b>' + coffees + '</b><span>橙C美式 杯</span></div>' +
+      '<div class="stat"><b>' + rate + '%</b><span>本月打卡率</span></div>' +
       '<div class="stat"><b>' + (wLast != null ? wLast.toFixed(1) : "—") + '</b><span>最新体重 kg</span></div>' +
       '<div class="stat"><b>' + (gap != null ? (gap > 0 ? "−" : "+") + Math.abs(gap).toFixed(1) : "—") + '</b><span>距 63 kg</span></div>' +
       '</div></section>';
@@ -491,13 +503,21 @@ h2 small{font-weight:400;font-size:11.5px;color:var(--sub)}
     return out;
   }
 
+  function apiErr(r) {
+    if (r.status === 401) return "401 Token 无效或已过期，重新生成一个";
+    if (r.status === 403) return "403 没有写权限：Contents 要设成 Read and write";
+    if (r.status === 404) return "404 仓库或路径不对，或 Token 没勾选这个仓库";
+    if (r.status === 409) return "409 文件冲突，再点一次同步";
+    return "HTTP " + r.status;
+  }
+
   async function ghGet() {
     var r = await fetch(apiUrl() + "?ref=" + encodeURIComponent(cfg.branch) + "&_=" + Date.now(), {
       headers: { Authorization: "Bearer " + cfg.token, Accept: "application/vnd.github+json" },
       cache: "no-store"
     });
     if (r.status === 404) return { sha: null, data: {} };
-    if (!r.ok) throw new Error("HTTP " + r.status);
+    if (!r.ok) throw new Error(apiErr(r));
     var j = await r.json();
     var data = {};
     try { data = JSON.parse(b64dec(j.content || "")) || {}; } catch (e) { data = {}; }
@@ -520,7 +540,7 @@ h2 small{font-weight:400;font-size:11.5px;color:var(--sub)}
       },
       body: JSON.stringify(body)
     });
-    if (!r.ok) throw new Error("HTTP " + r.status);
+    if (!r.ok) throw new Error(apiErr(r));
     return r.json();
   }
 
